@@ -121,7 +121,7 @@ function tabNameFor_(body) {
   const prefix = type === "private" ? "Private" : "Group";
   const chatId = String(body.chat_id).replace(/[^0-9-]/g, "");
   const title = String(body.chat_title || "Telegram Chat")
-    .replace(/[\\\\/?*:[\]]/g, " ")
+    .replace(/[\\\/:*?\[\]]/g, " ")
     .replace(/'/g, "")
     .replace(/\s+/g, " ")
     .trim() || "Telegram Chat";
