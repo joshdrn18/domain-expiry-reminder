@@ -65,7 +65,11 @@ function syncDomains_(body) {
     .getProperty(CONFIG.SPREADSHEET_ID_PROPERTY);
   if (!id) throw new Error("Missing Script Property SPREADSHEET_ID.");
 
-  const ss = SpreadsheetApp.openById(id);
+  const targetId = String(body.target_spreadsheet_id || id).trim();
+  if (!/^[a-zA-Z0-9_-]{20,}$/.test(targetId)) {
+    throw new Error("Invalid target spreadsheet ID.");
+  }
+  const ss = SpreadsheetApp.openById(targetId);
   const tabName = tabNameFor_(body);
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
