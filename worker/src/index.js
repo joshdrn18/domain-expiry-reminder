@@ -41,8 +41,14 @@ function normalizeDomain(d) { return String(d || "").trim().toLowerCase().replac
 function tenantIdForChat(chatId) { return `tg_${String(chatId).replace(/-/g, "n")}`; }
 function actorId(message) { return String(message.from?.id ?? "unknown"); }
 function isAdmin(message, env) {
-  const ids = String(env.ADMIN_TELEGRAM_IDS || "").split(",").map(x => x.trim()).filter(Boolean);
-  return ids.includes(actorId(message));
+  const adminIds = String(
+    env.ADMIN_TELEGRAM_ID || env.ADMIN_TELEGRAM_IDS || ""
+  )
+    .split(",")
+    .map(id => id.trim())
+    .filter(Boolean);
+
+  return adminIds.includes(String(message.from?.id || ""));
 }
 async function tg(env, method, payload) {
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("Missing TELEGRAM_BOT_TOKEN");
