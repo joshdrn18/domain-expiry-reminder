@@ -10,3 +10,6 @@ crons = ["0 1 * * *"]
 binding = "DB"
 database_name = "domain-expiry-db"
 database_id = "92bcfd6e-9133-4ba9-bfa9-c4e1601c1ddd"
+
+[vars]
+SHEETS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzuR7ITvoTaXUsdmOv8uSjj3wFuvbfXabquhHXidTJUlAvHbGIXDz3OaEJrzBNPsBdx/exec"
