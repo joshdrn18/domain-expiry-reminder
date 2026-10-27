@@ -764,22 +764,16 @@ Data RDAP hanya referensi. Tanggal reminder tidak diubah otomatis.`
 
     if (cmd === "admin_sheet" || cmd === "sheetmap") {
       if (!isAdmin(message, env)) {
-        return await send(
-          env, chatId, "Perintah ini khusus admin."
-        );
+        return await send(env, chatId, "Perintah ini khusus admin.");
       }
-
-      return await send(
-        env,
-        chatId,
-        `<b>Konfigurasi Google Sheets</b>
-
-Master spreadsheet: ${env.MASTER_SHEET_ID ? "terpasang" : "belum diatur"}
-Service account: ${env.GOOGLE_SERVICE_ACCOUNT_EMAIL ? "terpasang" : "belum diatur"}
-Mapping pelanggan: ${env.TENANT_SHEET_MAP_JSON ? "tersedia" : "belum diatur"}
-
-Mapping diatur melalui Worker variable/secret TENANT_SHEET_MAP_JSON.`
-      );
+      if (!env.SHEETS_WEB_APP_URL || !env.SHEETS_SYNC_SECRET) {
+        return await send(env, chatId, "Konfigurasi Sheets belum lengkap. Atur SHEETS_WEB_APP_URL dan SHEETS_SYNC_SECRET di Worker.");
+      }
+      const sync = await syncTenant(env, tenantId, chatId);
+      if (!sync.ok) {
+        return await send(env, chatId, "❌ Sinkronisasi Google Sheets gagal. Cek Cloudflare Worker Logs dan deployment Apps Script.");
+      }
+      return await send(env, chatId, "✅ <b>Google Sheets tersinkron!</b>\nJumlah domain: " + sync.count + "\nTab: Domains");
     }
 
     return await send(
@@ -887,260 +881,56 @@ Jika sudah diperpanjang, gunakan:
 // =====================================================
 
 async function syncTenant(env, tenantId, chatId) {
-  const targets = [];
-
-  if (env.MASTER_SHEET_ID) {
-    targets.push({
-      id: env.MASTER_SHEET_ID,
-      tab: env.MASTER_SHEET_TAB || "Domains",
-      name: "master"
-    });
-  }
-
-  const mapping = parseJson(env.TENANT_SHEET_MAP_JSON || "{}");
-  const customerSheetId = mapping[tenantId];
-
-  if (customerSheetId) {
-    targets.push({
-      id: customerSheetId,
-      tab: "Domains",
-      name: "customer"
-    });
-  }
-
-  if (!targets.length) {
-    console.log(
-      "Google Sheets sync skipped: no spreadsheet configured for",
-      tenantId
-    );
-    return;
+  if (!env.SHEETS_WEB_APP_URL || !env.SHEETS_SYNC_SECRET) {
+    const message = "SHEETS_WEB_APP_URL atau SHEETS_SYNC_SECRET belum diatur.";
+    await logSheetSync(env, tenantId, chatId, "apps_script", "error", message);
+    return { ok: false, error: message };
   }
 
   try {
     const result = await env.DB.prepare(`
-      SELECT chat_id, domain, expiry_date, registrar, created_at, updated_at
+      SELECT id, tenant_id, domain, expiry_date, registrar
       FROM domains
       WHERE tenant_id = ?
-      ORDER BY expiry_date, domain
+      ORDER BY expiry_date ASC, domain ASC
     `).bind(tenantId).all();
 
-    const rows = [[
-      "Tenant ID",
-      "Chat ID",
-      "Domain",
-      "Expiry Date",
-      "Registrar",
-      "Created At",
-      "Updated At"
-    ]];
+    const domains = (result.results || []).map(item => ({
+      id: String(item.id),
+      tenant_id: String(item.tenant_id),
+      domain: item.domain,
+      expiry_date: item.expiry_date,
+      registrar: item.registrar || "Unknown",
+      status: "active"
+    }));
 
-    for (const item of result.results || []) {
-      rows.push([
-        tenantId,
-        item.chat_id,
-        item.domain,
-        item.expiry_date,
-        item.registrar,
-        item.created_at,
-        item.updated_at
-      ]);
-    }
-
-    for (const target of targets) {
-      try {
-        await writeSheet(
-          env, target.id, target.tab, rows
-        );
-
-        await logSheetSync(
-          env,
-          tenantId,
-          chatId,
-          target.name,
-          "success",
-          `Updated ${rows.length - 1} domain rows`
-        );
-
-      } catch (error) {
-        console.error(
-          "Sheet sync failed:",
-          target.name,
-          String(error)
-        );
-
-        await logSheetSync(
-          env,
-          tenantId,
-          chatId,
-          target.name,
-          "error",
-          String(error)
-        );
-      }
-    }
-  } catch (error) {
-    console.error("Could not prepare Sheets data:", String(error));
-
-    await logSheetSync(
-      env,
-      tenantId,
-      chatId,
-      "google_sheets",
-      "error",
-      String(error)
-    );
-  }
-}
-
-async function signRS256(privateKeyPem, data) {
-  const pem = privateKeyPem
-    .replace(/\\n/g, "\n")
-    .replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, "");
-
-  const keyBytes = Uint8Array.from(
-    atob(pem),
-    char => char.charCodeAt(0)
-  );
-
-  const key = await crypto.subtle.importKey(
-    "pkcs8",
-    keyBytes,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    key,
-    new TextEncoder().encode(data)
-  );
-
-  return base64url(new Uint8Array(signature));
-}
-
-function base64url(bytes) {
-  let binary = "";
-
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
-
-function utf8Base64url(value) {
-  return base64url(new TextEncoder().encode(value));
-}
-
-async function googleAccessToken(env) {
-  if (
-    !env.GOOGLE_SERVICE_ACCOUNT_EMAIL ||
-    !env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
-  ) {
-    throw new Error("Google service account credentials missing");
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-
-  const header = utf8Base64url(JSON.stringify({
-    alg: "RS256",
-    typ: "JWT"
-  }));
-
-  const claim = utf8Base64url(JSON.stringify({
-    iss: env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    scope: "https://www.googleapis.com/auth/spreadsheets",
-    aud: "https://oauth2.googleapis.com/token",
-    iat: now,
-    exp: now + 3600
-  }));
-
-  const unsigned = `${header}.${claim}`;
-  const signature = await signRS256(
-    env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY,
-    unsigned
-  );
-
-  const response = await fetch(
-    "https://oauth2.googleapis.com/token",
-    {
+    const response = await fetch(env.SHEETS_WEB_APP_URL, {
       method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded"
-      },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion: `${unsigned}.${signature}`
-      })
-    }
-  );
-
-  const result = await response.json();
-
-  if (!response.ok || !result.access_token) {
-    throw new Error(
-      `Google OAuth failed: ${JSON.stringify(result).slice(0, 400)}`
-    );
-  }
-
-  return result.access_token;
-}
-
-async function writeSheet(env, spreadsheetId, tab, rows) {
-  const token = await googleAccessToken(env);
-  const safeTab = String(tab).replace(/'/g, "''");
-  const baseUrl =
-    `https://sheets.googleapis.com/v4/spreadsheets/` +
-    `${encodeURIComponent(spreadsheetId)}/values/`;
-
-  const range = `'${safeTab}'!A:G`;
-
-  // Clear the old range first so deleted domains do not remain.
-  const clearResponse = await fetch(
-    `${baseUrl}${encodeURIComponent(range)}:clear`,
-    {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json"
-      },
-      body: "{}"
-    }
-  );
-
-  if (!clearResponse.ok) {
-    const error = await clearResponse.text();
-    throw new Error(
-      `Sheets clear error ${clearResponse.status}: ${error.slice(0, 300)}`
-    );
-  }
-
-  const response = await fetch(
-    `${baseUrl}${encodeURIComponent(range)}?valueInputOption=RAW`,
-    {
-      method: "PUT",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json"
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        range,
-        majorDimension: "ROWS",
-        values: rows
+        secret: env.SHEETS_SYNC_SECRET,
+        action: "sync_domains",
+        tenant_id: String(tenantId),
+        domains
       })
+    });
+    const raw = await response.text();
+    let data;
+    try { data = JSON.parse(raw); }
+    catch { throw new Error("Apps Script returned non-JSON (HTTP " + response.status + ")."); }
+
+    if (!response.ok || data.ok !== true) {
+      throw new Error("Apps Script sync failed: " + String(data.error || response.status).slice(0, 300));
     }
-  );
 
-  const result = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(
-      `Sheets API error ${response.status}: ${JSON.stringify(result).slice(0, 400)}`
-    );
+    const summary = "Snapshot domains: " + domains.length + "; rows written: " + (data.total ?? "unknown");
+    await logSheetSync(env, tenantId, chatId, "apps_script", "success", summary);
+    console.log("Google Sheets sync successful:", tenantId, summary);
+    return { ok: true, count: domains.length };
+  } catch (error) {
+    console.error("Apps Script sync failed:", String(error));
+    await logSheetSync(env, tenantId, chatId, "apps_script", "error", String(error));
+    return { ok: false, error: String(error) };
   }
 }
 
