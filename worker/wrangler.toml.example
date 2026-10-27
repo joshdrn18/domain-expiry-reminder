@@ -1,0 +1,16 @@
+name = "domain-expiry-reminder"
+main = "src/index.js"
+compatibility_date = "2026-10-25"
+
+[triggers]
+crons = ["15 1 * * *"]
+
+[vars]
+APP_TIMEZONE = "Asia/Kuala_Lumpur"
+MAX_DOMAINS_PER_TENANT = "500"
+MASTER_SHEET_TAB = "Domains"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "domain-expiry-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
