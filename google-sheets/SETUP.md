@@ -1,13 +1,29 @@
-# Google Sheets via Apps Script
+# Google Sheets — satu tab per Telegram group/chat
 
-This project syncs a tenant's domain snapshot to Google Sheets through an Apps Script web app. A Google service-account key is not required.
+Bot memakai Apps Script sebagai bridge. Setiap grup Telegram mendapat tab Domains tersendiri di dalam satu file Google Sheets. Private chat juga mendapat tab sendiri. Semua tab tetap berada dalam satu file, jadi jangan bagikan file ini secara publik jika data tiap grup bersifat pribadi.
 
-1. Open the spreadsheet and open Extensions > Apps Script.
-2. Paste the project's Code.gs file into Apps Script.
-3. In Apps Script Project Settings > Script Properties, add SPREADSHEET_ID (the ID between /d/ and /edit in the Sheets URL) and SYNC_SECRET (a long random secret).
-4. Run setupSheet() once and approve the permissions. This creates Domains and Reminder Logs tabs.
-5. Deploy > New deployment > Web app. Execute as Me; permit unauthenticated requests if the deployment options allow it. Copy the URL ending in /exec.
-6. In Cloudflare Worker Variables and Secrets, set SHEETS_WEB_APP_URL to that /exec URL and SHEETS_SYNC_SECRET to the same secret as SYNC_SECRET. Do not commit or share the secret.
-7. Send /admin_sheet from an admin Telegram account to test. Add/import/edit/renew/delete sync automatically.
+## Setup awal
 
-If the script changes, edit the deployment and publish a new version. The bridge replaces rows for the current tenant while preserving other tenants' rows. It syncs domain records, not reminder delivery logs. Check Cloudflare Worker logs and Apps Script execution logs when sync fails.
+1. Buka file Google Sheets yang mau dipakai.
+2. Pilih **Extensions → Apps Script**.
+3. Buka file `google-sheets/Code.gs` di repo ini, salin seluruh isinya, lalu ganti kode Apps Script yang lama.
+4. Di Apps Script, buka **Project Settings → Script Properties** dan tambahkan:
+   - `SPREADSHEET_ID`: ID file Google Sheets, yaitu teks di antara `/d/` dan `/edit` pada URL.
+   - `SYNC_SECRET`: secret acak yang panjang. Jangan kirim atau commit secret ini.
+5. Pilih fungsi `setupSheet` lalu klik **Run** sekali. Setujui izin Google. Ini membuat tab Instructions.
+6. Klik **Deploy → Manage deployments**, edit deployment Web app yang sudah ada (atau buat deployment baru), pilih **Execute as: Me**, dan izinkan akses yang dapat menerima request dari Cloudflare Worker. Deploy versi terbaru dan salin URL yang berakhir dengan `/exec`.
+7. Di Cloudflare Worker `domain-expiry-reminder` → **Settings → Variables and Secrets**, set:
+   - `SHEETS_WEB_APP_URL` = URL Apps Script `/exec`
+   - `SHEETS_SYNC_SECRET` = nilai yang sama dengan Script Property `SYNC_SECRET`
+8. Pastikan `ADMIN_TELEGRAM_ID` atau `ADMIN_TELEGRAM_IDS` berisi Telegram user ID admin.
+9. Di grup Telegram, kirim `/admin_sheet`. Bot akan membuat/memperbarui tab khusus untuk grup tersebut. Coba `/add` atau `/import`; perubahan domain berikutnya otomatis tersinkron.
+
+## Nama tab
+
+Tab diberi nama seperti `Group - Nama Grup [-100123...]` atau `Private - Nama Pengguna [123...]`. Chat ID ditambahkan agar nama grup yang sama tidak bertabrakan. Setiap sinkronisasi mengganti isi tab tersebut dengan snapshot terbaru dari grup itu saja; tab grup lain tidak dihapus atau diubah.
+
+## Penting
+
+- Perubahan pada file Apps Script belum berlaku sampai deployment Web app dipublikasikan ke versi terbaru.
+- Satu file spreadsheet masih memiliki akses berbagi yang sama untuk semua tab. Kalau setiap grup perlu benar-benar terpisah dan tidak boleh melihat data grup lain, gunakan satu file spreadsheet terpisah per grup dengan pengaturan berbagi tersendiri; tab terpisah bukan batas keamanan.
+- Jika sinkronisasi gagal, cek Cloudflare Worker logs dan Apps Script Executions.
