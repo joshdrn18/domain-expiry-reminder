@@ -1,29 +1,33 @@
-# Google Sheets — satu tab per Telegram group/chat
+# Google Sheets — master + file terpisah per grup
 
-Bot memakai Apps Script sebagai bridge. Setiap grup Telegram mendapat tab Domains tersendiri di dalam satu file Google Sheets. Private chat juga mendapat tab sendiri. Semua tab tetap berada dalam satu file, jadi jangan bagikan file ini secara publik jika data tiap grup bersifat pribadi.
+Cloudflare D1 tetap menjadi database utama. Apps Script menyinkronkan snapshot ke Sheet master, lalu ke file Google Sheets terpisah untuk grup jika mapping grup sudah terdaftar.
 
-## Setup awal
+## Setup master
 
-1. Buka file Google Sheets yang mau dipakai.
-2. Pilih **Extensions → Apps Script**.
-3. Buka file `google-sheets/Code.gs` di repo ini, salin seluruh isinya, lalu ganti kode Apps Script yang lama.
-4. Di Apps Script, buka **Project Settings → Script Properties** dan tambahkan:
-   - `SPREADSHEET_ID`: ID file Google Sheets, yaitu teks di antara `/d/` dan `/edit` pada URL.
-   - `SYNC_SECRET`: secret acak yang panjang. Jangan kirim atau commit secret ini.
-5. Pilih fungsi `setupSheet` lalu klik **Run** sekali. Setujui izin Google. Ini membuat tab Instructions.
-6. Klik **Deploy → Manage deployments**, edit deployment Web app yang sudah ada (atau buat deployment baru), pilih **Execute as: Me**, dan izinkan akses yang dapat menerima request dari Cloudflare Worker. Deploy versi terbaru dan salin URL yang berakhir dengan `/exec`.
-7. Di Cloudflare Worker `domain-expiry-reminder` → **Settings → Variables and Secrets**, set:
-   - `SHEETS_WEB_APP_URL` = URL Apps Script `/exec`
-   - `SHEETS_SYNC_SECRET` = nilai yang sama dengan Script Property `SYNC_SECRET`
-8. Pastikan `ADMIN_TELEGRAM_ID` atau `ADMIN_TELEGRAM_IDS` berisi Telegram user ID admin.
-9. Di grup Telegram, kirim `/admin_sheet`. Bot akan membuat/memperbarui tab khusus untuk grup tersebut. Coba `/add` atau `/import`; perubahan domain berikutnya otomatis tersinkron.
+1. Buka Google Sheets master yang sudah dipakai, lalu **Extensions → Apps Script**.
+2. Ganti seluruh kode Apps Script dengan isi terbaru `google-sheets/Code.gs` dari repo.
+3. Di **Project Settings → Script Properties**, pastikan `SPREADSHEET_ID` berisi ID Sheet master dan `SYNC_SECRET` sama dengan `SHEETS_SYNC_SECRET` di Worker.
+4. Jalankan `setupSheet()` sekali dan setujui otorisasi.
+5. **Deploy → Manage deployments → Edit Web app → New version → Deploy**. Gunakan URL `/exec` yang sama.
+6. Di Worker Production, pastikan `SHEETS_WEB_APP_URL` dan `SHEETS_SYNC_SECRET` sudah benar.
 
-## Nama tab
+## Migration D1 wajib
 
-Tab diberi nama seperti `Group - Nama Grup [-100123...]` atau `Private - Nama Pengguna [123...]`. Chat ID ditambahkan agar nama grup yang sama tidak bertabrakan. Setiap sinkronisasi mengganti isi tab tersebut dengan snapshot terbaru dari grup itu saja; tab grup lain tidak dihapus atau diubah.
+Jalankan isi `worker/migrations/0002_chat_sheets.sql` pada database D1 Production yang dipakai Worker sebelum memakai fitur ini.
 
-## Penting
+## Hubungkan Sheet khusus grup
 
-- Perubahan pada file Apps Script belum berlaku sampai deployment Web app dipublikasikan ke versi terbaru.
-- Satu file spreadsheet masih memiliki akses berbagi yang sama untuk semua tab. Kalau setiap grup perlu benar-benar terpisah dan tidak boleh melihat data grup lain, gunakan satu file spreadsheet terpisah per grup dengan pengaturan berbagi tersendiri; tab terpisah bukan batas keamanan.
-- Jika sinkronisasi gagal, cek Cloudflare Worker logs dan Apps Script Executions.
+1. Buat Google Sheets baru untuk grup.
+2. Bagikan file itu kepada akun Google yang menjalankan Apps Script dengan izin **Editor**.
+3. Dari grup Telegram, admin bot kirim `/admin_sheet <URL atau ID Google Sheets grup>`.
+4. Worker menyimpan mapping grup → spreadsheet di D1, lalu menyinkronkan master dan Sheet grup.
+5. Setelah terhubung, perubahan domain berikutnya otomatis menyinkronkan kedua tujuan.
+
+Kirim `/admin_sheet` tanpa argumen untuk sinkronisasi ulang. Untuk mengganti Sheet grup, kirim lagi perintah dengan URL/ID baru.
+
+## Keamanan
+
+- Master berisi database utama. Sheet grup hanya menerima domain yang terkait dengan chat ID grup tersebut.
+- Atur sharing setiap file grup sendiri; hanya pengguna yang diberi akses ke file itu yang bisa membukanya. Jangan bagikan master ke member.
+- Apps Script harus berjalan sebagai akun yang memiliki akses Editor ke master dan setiap Sheet grup.
+- `setupSheet()` membuat/memperbarui tab Instructions di master; tidak menghapus tab lama.
