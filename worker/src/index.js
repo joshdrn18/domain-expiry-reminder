@@ -773,7 +773,7 @@ Data RDAP hanya referensi. Tanggal reminder tidak diubah otomatis.`
       if (!sync.ok) {
         return await send(env, chatId, "❌ Sinkronisasi Google Sheets gagal. Cek Cloudflare Worker Logs dan deployment Apps Script.");
       }
-      return await send(env, chatId, "✅ <b>Google Sheets tersinkron!</b>\nJumlah domain: " + sync.count + "\nTab: Domains");
+      return await send(env, chatId, "✅ <b>Google Sheets tersinkron!</b>\nJumlah domain: " + sync.count + "\nTab grup: " + esc(sync.tab) + "");
     }
 
     return await send(
@@ -888,6 +888,10 @@ async function syncTenant(env, tenantId, chatId) {
   }
 
   try {
+    const chat = await env.DB.prepare(
+      "SELECT title, chat_type FROM chats WHERE chat_id = ? AND tenant_id = ?"
+    ).bind(String(chatId), String(tenantId)).first();
+
     const result = await env.DB.prepare(`
       SELECT id, tenant_id, domain, expiry_date, registrar
       FROM domains
@@ -911,22 +915,29 @@ async function syncTenant(env, tenantId, chatId) {
         secret: env.SHEETS_SYNC_SECRET,
         action: "sync_domains",
         tenant_id: String(tenantId),
+        chat_id: String(chatId),
+        chat_title: String(chat?.title || "Telegram Chat"),
+        chat_type: String(chat?.chat_type || "private"),
         domains
       })
     });
+
     const raw = await response.text();
     let data;
-    try { data = JSON.parse(raw); }
-    catch { throw new Error("Apps Script returned non-JSON (HTTP " + response.status + ")."); }
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error("Apps Script returned non-JSON (HTTP " + response.status + ").");
+    }
 
     if (!response.ok || data.ok !== true) {
       throw new Error("Apps Script sync failed: " + String(data.error || response.status).slice(0, 300));
     }
 
-    const summary = "Snapshot domains: " + domains.length + "; rows written: " + (data.total ?? "unknown");
+    const summary = "Tab: " + (data.tab || "unknown") + "; domains: " + domains.length;
     await logSheetSync(env, tenantId, chatId, "apps_script", "success", summary);
     console.log("Google Sheets sync successful:", tenantId, summary);
-    return { ok: true, count: domains.length };
+    return { ok: true, count: domains.length, tab: data.tab || "Group Domains" };
   } catch (error) {
     console.error("Apps Script sync failed:", String(error));
     await logSheetSync(env, tenantId, chatId, "apps_script", "error", String(error));
