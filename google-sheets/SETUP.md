@@ -1,13 +1,13 @@
-# Google Sheets API setup (no Apps Script)
+# Google Sheets via Apps Script
 
-1. Open Google Cloud Console and create/select a project.
-2. Enable **Google Sheets API**.
-3. Create a service account and generate a JSON key.
-4. Copy the service account email and private key into Worker secrets. Do not commit the JSON key to GitHub.
-5. Create an internal master spreadsheet and a tab named `Domains`.
-6. Share that spreadsheet with the service account email as Editor.
-7. For each buyer, create a separate spreadsheet and share it with the same service account as Editor.
-8. Set Worker secret `TENANT_SHEET_MAP_JSON` to a JSON object mapping D1 tenant IDs to spreadsheet IDs. Tenant IDs use `tg_` plus the Telegram chat ID with minus signs replaced by `n`.
-9. Set `MASTER_SHEET_ID` to the internal master spreadsheet ID.
+This project syncs a tenant's domain snapshot to Google Sheets through an Apps Script web app. A Google service-account key is not required.
 
-The Worker writes the current tenant's domain snapshot into columns A:G on the configured tab. This starter does not create spreadsheets automatically; create them and configure the mapping first.
+1. Open the spreadsheet and open Extensions > Apps Script.
+2. Paste the project's Code.gs file into Apps Script.
+3. In Apps Script Project Settings > Script Properties, add SPREADSHEET_ID (the ID between /d/ and /edit in the Sheets URL) and SYNC_SECRET (a long random secret).
+4. Run setupSheet() once and approve the permissions. This creates Domains and Reminder Logs tabs.
+5. Deploy > New deployment > Web app. Execute as Me; permit unauthenticated requests if the deployment options allow it. Copy the URL ending in /exec.
+6. In Cloudflare Worker Variables and Secrets, set SHEETS_WEB_APP_URL to that /exec URL and SHEETS_SYNC_SECRET to the same secret as SYNC_SECRET. Do not commit or share the secret.
+7. Send /admin_sheet from an admin Telegram account to test. Add/import/edit/renew/delete sync automatically.
+
+If the script changes, edit the deployment and publish a new version. The bridge replaces rows for the current tenant while preserving other tenants' rows. It syncs domain records, not reminder delivery logs. Check Cloudflare Worker logs and Apps Script execution logs when sync fails.
