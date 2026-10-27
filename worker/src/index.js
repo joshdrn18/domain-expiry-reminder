@@ -300,7 +300,8 @@ myshop.net | 2027-04-20 | Namecheap</code>
 /help — bantuan
 
 <b>Perintah admin</b>
-/admin_sheet — informasi konfigurasi Sheets
+/admin_sheet — sinkronisasi master dan Sheet grup
+/admin_sheet <URL atau ID Sheet grup> — hubungkan Sheet khusus grup
 
 <b>Reminder otomatis</b>
 H-30, H-14, H-7, H-3, H-1 dan H-0.
@@ -769,11 +770,29 @@ Data RDAP hanya referensi. Tanggal reminder tidak diubah otomatis.`
       if (!env.SHEETS_WEB_APP_URL || !env.SHEETS_SYNC_SECRET) {
         return await send(env, chatId, "Konfigurasi Sheets belum lengkap. Atur SHEETS_WEB_APP_URL dan SHEETS_SYNC_SECRET di Worker.");
       }
+      if (args) {
+        const spreadsheetId = extractSpreadsheetId(args);
+        if (!spreadsheetId) {
+          return await send(env, chatId, "Format salah. Kirim /admin_sheet <ID atau URL Google Sheets>.");
+        }
+        await env.DB.prepare(`
+          INSERT INTO chat_sheets (chat_id, tenant_id, spreadsheet_id, created_by, updated_at)
+          VALUES (?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(chat_id) DO UPDATE SET
+            tenant_id = excluded.tenant_id,
+            spreadsheet_id = excluded.spreadsheet_id,
+            created_by = excluded.created_by,
+            updated_at = datetime('now')
+        `).bind(String(chatId), String(tenantId), spreadsheetId, String(actorId(message))).run();
+      }
       const sync = await syncTenant(env, tenantId, chatId);
       if (!sync.ok) {
-        return await send(env, chatId, "❌ Sinkronisasi Google Sheets gagal. Cek Cloudflare Worker Logs dan deployment Apps Script.");
+        return await send(env, chatId, "❌ Sinkronisasi Google Sheets gagal. Detail: " + esc(sync.error || "unknown") + ". Cek Worker Logs dan Apps Script deployment.");
       }
-      return await send(env, chatId, "✅ <b>Google Sheets tersinkron!</b>\nJumlah domain: " + sync.count + "\nTab grup: " + esc(sync.tab) + "");
+      const groupLine = sync.groupSynced
+        ? "\nSheet grup: tersinkron (" + esc(sync.groupSpreadsheetId) + ")"
+        : "\nSheet grup belum dihubungkan. Buat Google Sheets khusus grup, lalu kirim /admin_sheet <URL atau ID Sheet>.";
+      return await send(env, chatId, "✅ <b>Google Sheets tersinkron!</b>\nMaster: " + esc(sync.masterTab || "OK") + "\nJumlah domain master: " + sync.count + groupLine);
     }
 
     return await send(
@@ -876,6 +895,13 @@ Jika sudah diperpanjang, gunakan:
   }
 }
 
+function extractSpreadsheetId(input) {
+  const value = String(input || "").trim();
+  const match = value.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  const id = match ? match[1] : value;
+  return /^[a-zA-Z0-9_-]{20,}$/.test(id) ? id : "";
+}
+
 // =====================================================
 // GOOGLE SHEETS SYNC
 // =====================================================
@@ -886,62 +912,67 @@ async function syncTenant(env, tenantId, chatId) {
     await logSheetSync(env, tenantId, chatId, "apps_script", "error", message);
     return { ok: false, error: message };
   }
-
   try {
     const chat = await env.DB.prepare(
       "SELECT title, chat_type FROM chats WHERE chat_id = ? AND tenant_id = ?"
     ).bind(String(chatId), String(tenantId)).first();
-
     const result = await env.DB.prepare(`
-      SELECT id, tenant_id, domain, expiry_date, registrar
-      FROM domains
-      WHERE tenant_id = ?
-      ORDER BY expiry_date ASC, domain ASC
+      SELECT id, tenant_id, domain, expiry_date, registrar FROM domains
+      WHERE tenant_id = ? ORDER BY expiry_date ASC, domain ASC
     `).bind(tenantId).all();
-
     const domains = (result.results || []).map(item => ({
-      id: String(item.id),
-      tenant_id: String(item.tenant_id),
-      domain: item.domain,
-      expiry_date: item.expiry_date,
-      registrar: item.registrar || "Unknown",
-      status: "active"
+      id: String(item.id), tenant_id: String(item.tenant_id), domain: item.domain,
+      expiry_date: item.expiry_date, registrar: item.registrar || "Unknown", status: "active"
     }));
-
-    const response = await fetch(env.SHEETS_WEB_APP_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        secret: env.SHEETS_SYNC_SECRET,
-        action: "sync_domains",
-        tenant_id: String(tenantId),
-        chat_id: String(chatId),
-        chat_title: String(chat?.title || "Telegram Chat"),
-        chat_type: String(chat?.chat_type || "private"),
-        domains
-      })
-    });
-
-    const raw = await response.text();
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("Apps Script returned non-JSON (HTTP " + response.status + ").");
+    const basePayload = {
+      secret: env.SHEETS_SYNC_SECRET, action: "sync_domains",
+      tenant_id: String(tenantId), chat_id: String(chatId),
+      chat_title: String(chat?.title || "Telegram Chat"),
+      chat_type: String(chat?.chat_type || "private")
+    };
+    const postSync = async (targetSpreadsheetId, items) => {
+      const payload = { ...basePayload, domains: items };
+      if (targetSpreadsheetId) payload.target_spreadsheet_id = targetSpreadsheetId;
+      const response = await fetch(env.SHEETS_WEB_APP_URL, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const raw = await response.text();
+      let data;
+      try { data = JSON.parse(raw); }
+      catch { throw new Error("Apps Script returned non-JSON (HTTP " + response.status + ")."); }
+      if (!response.ok || data.ok !== true) {
+        throw new Error("Apps Script sync failed: " + String(data.error || response.status).slice(0, 250));
+      }
+      return data;
+    };
+    const master = await postSync(null, domains);
+    await logSheetSync(env, tenantId, chatId, "apps_script_master", "success",
+      "Tab: " + (master.tab || "unknown") + "; domains: " + domains.length);
+    const mapping = await env.DB.prepare(
+      "SELECT spreadsheet_id FROM chat_sheets WHERE chat_id = ? AND tenant_id = ?"
+    ).bind(String(chatId), String(tenantId)).first();
+    if (!mapping?.spreadsheet_id) {
+      return { ok: true, count: domains.length, masterTab: master.tab, groupSynced: false };
     }
-
-    if (!response.ok || data.ok !== true) {
-      throw new Error("Apps Script sync failed: " + String(data.error || response.status).slice(0, 300));
-    }
-
-    const summary = "Tab: " + (data.tab || "unknown") + "; domains: " + domains.length;
-    await logSheetSync(env, tenantId, chatId, "apps_script", "success", summary);
-    console.log("Google Sheets sync successful:", tenantId, summary);
-    return { ok: true, count: domains.length, tab: data.tab || "Group Domains" };
+    const groupResult = await env.DB.prepare(`
+      SELECT id, tenant_id, domain, expiry_date, registrar FROM domains
+      WHERE tenant_id = ? AND chat_id = ? ORDER BY expiry_date ASC, domain ASC
+    `).bind(tenantId, String(chatId)).all();
+    const groupDomains = (groupResult.results || []).map(item => ({
+      id: String(item.id), tenant_id: String(item.tenant_id), domain: item.domain,
+      expiry_date: item.expiry_date, registrar: item.registrar || "Unknown", status: "active"
+    }));
+    await postSync(mapping.spreadsheet_id, groupDomains);
+    await logSheetSync(env, tenantId, chatId, "apps_script_group", "success",
+      "Spreadsheet: " + mapping.spreadsheet_id + "; domains: " + groupDomains.length);
+    return { ok: true, count: domains.length, masterTab: master.tab,
+      groupSynced: true, groupSpreadsheetId: mapping.spreadsheet_id, groupCount: groupDomains.length };
   } catch (error) {
-    console.error("Apps Script sync failed:", String(error));
-    await logSheetSync(env, tenantId, chatId, "apps_script", "error", String(error));
-    return { ok: false, error: String(error) };
+    const message = String(error?.message || error).slice(0, 400);
+    await logSheetSync(env, tenantId, chatId, "apps_script", "error", message);
+    console.error("Google Sheets sync failed:", message);
+    return { ok: false, error: message };
   }
 }
 
