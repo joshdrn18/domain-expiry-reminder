@@ -7,6 +7,22 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    // Public health endpoint for external monitoring; does not access D1 or secrets.
+    if (request.method === "GET" && url.pathname === "/health") {
+      return new Response(JSON.stringify({
+        ok: true,
+        service: "domain-expiry-reminder",
+        status: "healthy",
+        timestamp: new Date().toISOString()
+      }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store"
+        }
+      });
+    }
+
     if (request.method === "GET" && url.pathname === "/") {
       return new Response("Domain Expiry Reminder is running.", {
         headers: { "content-type": "text/plain; charset=utf-8" }
